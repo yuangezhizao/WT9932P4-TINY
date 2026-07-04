@@ -11,6 +11,7 @@ on:
 
 env:
   ESP_IDF_TARGET: ESP32P4
+  ESP_IDF_COMPONENTS_PATH: dependencies  
   ARTIFACT_BOOTLOADER_BIN_PATH: build/bootloader/bootloader.bin
   ARTIFACT_PARTITION_TABLE_BIN_PATH: build/partition_table/partition-table.bin
   ARTIFACT_APP_BIN_PATH: build/WT9932P4-TINY.bin
@@ -40,6 +41,12 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+
+      - name: 📥 Fetch dependencies
+        run: |
+          mkdir -pv ${{ env.ESP_IDF_COMPONENTS_PATH }}
+          python3 -V
+          python3 fetch_repos.py
 
       - name: 🛠️ Build ESP-IDF project
         uses: espressif/esp-idf-ci-action@v1
