@@ -9,10 +9,14 @@
   "idf.customExtraVars": {
     "IDF_TARGET": "esp32p4"
   },
+  // clangd.path 与 clangd.arguments(含 --compile-commands-dir) 由 ESP-IDF 扩展的
+  // "ESP-IDF: Configure project for ESP-Clang"(或 "Add VS Code Configuration Folder") 自动写入。
+  // 官方文档正文示例为绝对路径(本仓库绝对路径的由来); 官方 issue VSC-1527 推荐 ${workspaceFolder}/build。
   "clangd.path": "/Users/yuangezhizao/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
-    "--compile-commands-dir=/Users/yuangezhizao/Documents/IDF/WT9932P4-TINY/build"
-  ]
+    "--compile-commands-dir=${workspaceFolder}/build"
+  ],
+  "idf.flashType": "UART"
 }
