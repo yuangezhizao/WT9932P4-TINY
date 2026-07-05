@@ -43,9 +43,8 @@ jobs:
 
       - name: 📥 Fetch dependencies
         run: |
-          mkdir -pv ${{ env.ESP_IDF_COMPONENTS_PATH }}
           python3 -V
-          python3 fetch_repos.py
+          python3 fetch_repos.py --yes
 
       - name: 🛠️ Build ESP-IDF project
         uses: espressif/esp-idf-ci-action@v1
