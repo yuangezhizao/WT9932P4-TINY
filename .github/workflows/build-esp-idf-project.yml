@@ -11,7 +11,6 @@ on:
 
 env:
   ESP_IDF_TARGET: ESP32P4
-  ESP_IDF_COMPONENTS_PATH: dependencies  
   ARTIFACT_BOOTLOADER_BIN_PATH: build/bootloader/bootloader.bin
   ARTIFACT_PARTITION_TABLE_BIN_PATH: build/partition_table/partition-table.bin
   ARTIFACT_APP_BIN_PATH: build/WT9932P4-TINY.bin
@@ -64,15 +63,21 @@ jobs:
             idf.py size-components
             idf.py size-files
 
-      - name: ℹ️ Show image_info by esptool.py
+      - name: ℹ️ Show image-info by esptool
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ matrix.esp_idf_version }}
           target: ${{ env.ESP_IDF_TARGET }}
           command: |
-            esptool.py image_info ${{ env.ARTIFACT_BOOTLOADER_BIN_PATH }} --version 2
-            echo -e
-            esptool.py image_info ${{ env.ARTIFACT_APP_BIN_PATH }} --version 2
+            if python -m esptool image-info --help >/dev/null 2>&1; then
+              python -m esptool image-info ${{ env.ARTIFACT_BOOTLOADER_BIN_PATH }}
+              echo
+              python -m esptool image-info ${{ env.ARTIFACT_APP_BIN_PATH }}
+            else
+              python -m esptool image_info ${{ env.ARTIFACT_BOOTLOADER_BIN_PATH }} --version 2
+              echo
+              python -m esptool image_info ${{ env.ARTIFACT_APP_BIN_PATH }} --version 2
+            fi
 
       - name: 📦 Upload build artifacts (include binary images)
         uses: actions/upload-artifact@v7
