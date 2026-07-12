@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS
     # "main.c"
-    "hello_world_main.c"
+    "main_hello_world.c"
 
     INCLUDE_DIRS
     "."
