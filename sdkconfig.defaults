@@ -3,6 +3,6 @@
 # 1) 固定构建目标为 ESP32-P4：保证全新环境（无 sdkconfig）执行 idf.py build 开箱即用、不回退到默认 esp32 目标，并与 CI（.github/workflows/build-esp-idf-project.yml 的 ESP_IDF_TARGET: ESP32P4）一致。
 CONFIG_IDF_TARGET="esp32p4"
 
-# 2) 适配 ESP32-P4 修订版本 <3.0（实测板卡为 revision v1.3）。ESP-IDF 默认按量产 v3.x 构建，若不声明本项，esptool 会以 "requires chip revision in range [v3.0 - v3.99] (this chip is revision v1.3)" 拒绝烧录。该选项在 ESP-IDF v5.5.4 与 latest 均存在；对 Cloud 内的纯构建无副作用，仅影响真实烧录时的芯片修订校验。CONFIG_ESP32P4_REV_MIN_0 对应 menuconfig 中 "Minimum Supported ESP32-P4 Revision = Rev v0.0"，为最低支持修订，向下兼容 0.x/1.x（含 v1.3）。
-CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
-CONFIG_ESP32P4_REV_MIN_0=y
+# 2) 默认激活 demo（blink）的默认配置（仅在激活 main_blink_example.c 时才有运行时意义；其它 demo 下这些符号仍写入生成的 sdkconfig，只是不被读取）：板载 RGB 走可寻址 led_strip + GPIO51。
+CONFIG_BLINK_LED_STRIP=y
+CONFIG_BLINK_GPIO=51
