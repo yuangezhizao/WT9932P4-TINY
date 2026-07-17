@@ -3,6 +3,120 @@
 # 1) 固定构建目标为 ESP32-P4：保证全新环境（无 sdkconfig）执行 idf.py build 开箱即用、不回退到默认 esp32 目标，并与 CI（.github/workflows/build-esp-idf-project.yml 的 ESP_IDF_TARGET: ESP32P4）一致。
 CONFIG_IDF_TARGET="esp32p4"
 
-# 2) 默认激活 demo（blink）的默认配置（仅在激活 main_blink_example.c 时才有运行时意义；其它 demo 下这些符号仍写入生成的 sdkconfig，只是不被读取）：板载 RGB 走可寻址 led_strip + GPIO51。
+# 2) blink demo 的默认配置（本工程现默认激活 main_uvc.c，此处仅在切回 main_blink_example.c 时才有运行时意义；其它 demo 下这些符号仍写入生成的 sdkconfig，只是不被读取）：板载 RGB 走可寻址 led_strip + GPIO51。
 CONFIG_BLINK_LED_STRIP=y
 CONFIG_BLINK_GPIO=51
+
+# =========================================================================
+# uvc demo 配置（OV5647 → ISP → 硬件 JPEG(MJPEG) → USB UVC Device）
+# 说明：以下为「追加到根 sdkconfig.defaults 的完整增量」；flash size 见 sdkconfig.defaults.esp32p4。
+# =========================================================================
+
+# 板级：Customized 开发板 + 启用 MIPI-CSI sensor + 本板引脚/时钟
+# （必须显式设：example_video_common 选板默认是 Function-EV-Board V1.5，且 XCLK_PIN 仅 customized 板可配；否则 rm sdkconfig 后开箱构建会用错板）
+CONFIG_EXAMPLE_SELECT_CUSTOMIZED_DEV_BOARD=y
+CONFIG_EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR=y
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN=8
+CONFIG_EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN=7
+CONFIG_EXAMPLE_MIPI_CSI_XCLK_PIN=-1
+
+# 传感器 OV5647（SCCB 自动探测）+ 采集/UVC 输出分辨率
+# 关键：采集档与 UVC 尺寸必须成对一致（main_uvc.c 的 video_start_cb 中采集/编码/UVC 三处共用同一 width×height、不缩放）
+# RAW10=10bit 高画质（1080p/1280×960）；RAW8=8bit 高帧率降采样（800×* 系列）
+CONFIG_CAMERA_OV5647=y
+
+# ===== 分辨率档：5 选 1（保留一组取消注释、其余整组注释；切换后须 rm sdkconfig && idf.py build）=====
+# 档位按分辨率（像素面积）从高到低排列；默认取消注释最高档 [A]，其余整组注释
+# ---[A] 1920×1080@30 RAW10（P4/OV5647 最高分辨率，默认；帧率最低）---
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=n
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=n
+CONFIG_CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS=n
+CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=n
+CONFIG_CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS=y
+CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW10_1920X1080_30FPS=y
+CONFIG_UVC_CAM1_FRAMESIZE_WIDTH=1920
+CONFIG_UVC_CAM1_FRAMESIZE_HEIGT=1080
+CONFIG_UVC_CAM1_FRAMERATE=30
+# ---[B] 1280×960@45 RAW10（画质/帧率均衡，binning）---
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=y
+# CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW10_1280X960_BINNING_45FPS=y
+# CONFIG_UVC_CAM1_FRAMESIZE_WIDTH=1280
+# CONFIG_UVC_CAM1_FRAMESIZE_HEIGT=960
+# CONFIG_UVC_CAM1_FRAMERATE=45
+# ---[C] 800×1280@50 RAW8（竖屏）---
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS=y
+# CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW8_800X1280_50FPS=y
+# CONFIG_UVC_CAM1_FRAMESIZE_WIDTH=800
+# CONFIG_UVC_CAM1_FRAMESIZE_HEIGT=1280
+# CONFIG_UVC_CAM1_FRAMERATE=50
+# ---[D] 800×800@50 RAW8（帧率优先，1:1 方形）---
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=y
+# CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW8_800X800_50FPS=y
+# CONFIG_UVC_CAM1_FRAMESIZE_WIDTH=800
+# CONFIG_UVC_CAM1_FRAMESIZE_HEIGT=800
+# CONFIG_UVC_CAM1_FRAMERATE=50
+# ---[E] 800×640@50 RAW8（WVGA，5:4）---
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X800_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X1280_50FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1280X960_BINNING_45FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW10_1920X1080_30FPS=n
+# CONFIG_CAMERA_OV5647_MIPI_RAW8_800X640_50FPS=y
+# CONFIG_CAMERA_OV5647_MIPI_DEFAULT_FMT_RAW8_800X640_50FPS=y
+# CONFIG_UVC_CAM1_FRAMESIZE_WIDTH=800
+# CONFIG_UVC_CAM1_FRAMESIZE_HEIGT=640
+# CONFIG_UVC_CAM1_FRAMERATE=50
+# ===== 分辨率档结束 =====
+
+# 视频管线：RAW→RGB/YUV 由默认开启的 ISP video device 完成（编码器 device 见下方「编码格式档」，随 MJPEG/H264 各自开启、互斥）
+# 注：RAW→RGB 由 ESP_VIDEO_ENABLE_ISP_VIDEO_DEVICE（自身 default y）完成，无需显式开；它与 CSI device 所 select 的内部符号 ESP_VIDEO_ENABLE_ISP 是两个不同符号（后者是内部开关、非设备节点）。
+# ISP IPA 自动调优（AE/AWB/AF）：默认关闭——对齐官方 uvc 蓝本，缓解画面偏黄（开启时 IPA 的 AWB 疑似算偏致整体偏黄）。
+# 若需自动曝光/白平衡/对焦，改 =y；进一步可自定义 OV5647 IPA JSON（CAMERA_OV5647_CUSTOMIZED_IPA_JSON_CONFIGURATION_FILE）。
+CONFIG_ESP_VIDEO_ENABLE_ISP_PIPELINE_CONTROLLER=n
+
+# ===== 编码格式档：2 选 1（保留一组取消注释、其余整组注释；切换后须 rm sdkconfig && idf.py build）=====
+# main/Kconfig.projbuild 已备齐 MJPEG/H264 两套编码参数（对齐官方蓝本）；分辨率/帧率见上方「分辨率档」（两格式共用 WIDTH/HEIGHT/FRAMERATE）
+# ---[MJPEG]（默认；UVC 通告 MJPEG、走硬件 JPEG 编码 device；JPEG 质量见下方 EXAMPLE_JPEG_COMPRESSION_QUALITY）---
+CONFIG_FORMAT_MJPEG_CAM1=y
+CONFIG_ESP_VIDEO_ENABLE_HW_JPEG_ENC_VIDEO_DEVICE=y
+# ---[H264]（走硬件 H264 编码 device；H264 码率/QP/I 帧周期见 menuconfig「Example Configuration」、有默认值）---
+# CONFIG_FORMAT_H264_CAM1=y
+# CONFIG_ESP_VIDEO_ENABLE_HW_H264_VIDEO_DEVICE=y
+# ===== 编码格式档结束 =====
+# 注：编码器 device 随格式各自开启、互斥——MJPEG 只编 JPEG 编码器 device、H264 只编 H264 device（切换时整组注释即可、各省对方 device 体积）；MJPEG/H264 双态 Cloud 构建均验证通过
+
+# FRAMESIZE choice 占位（该 choice 必须选一项；实际尺寸由上方分辨率档的 WIDTH/HEIGHT 显式覆盖）
+CONFIG_FRAMESIZE_FHD=y
+# 只通告一档（MULTI 默认 y 会额外通告 VGA/HVGA、与采集档不一致）
+CONFIG_UVC_CAM1_MULTI_FRAMESIZE=n
+# 禁用 USB MSC 存储（UVC 已占用 USB，防冲突；对齐官方 uvc 例程）
+CONFIG_EXAMPLE_DISABLE_USB_MSC_STORAGE=y
+# UVC 传输模式：默认改用 bulk（连续传输、带宽利用率高，1280×960 可上更高帧率；改回 isoc 注释掉下一行即可）。
+# isoc vs bulk：isoc 保证固定带宽/无重传/每微帧仅 1 包(本库 1023B)上限低；bulk 无带宽保证但可占满总线/有重传/更适合大帧。
+CONFIG_UVC_MODE_BULK_CAM1=y
+# JPEG 压缩质量：显式声明为默认 80（范围 1-100；仅影响清晰度、不影响偏黄）；如需提帧率可降到 60 等
+CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY=80
+
+# 系统/RTOS：对齐同板例程，tick 100Hz→1000Hz，流水线任务调度/超时粒度 10ms→1ms
+CONFIG_FREERTOS_HZ=1000
+
+# 分区表：摄像头固件较大，用内置 large 分区（factory ~1.5MB）；构建后 idf.py size 若超再改 CUSTOM
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# 注：CSI 采集设备 CONFIG_ESP_VIDEO_ENABLE_MIPI_CSI_VIDEO_DEVICE 默认 y（且 select ISP），无需显式列。
+# 注：ESP_VIDEO_ENABLE_USB_UVC_VIDEO_DEVICE（默认 n）是 P4 当 USB host 读外接 USB 摄像头（≠ 本项目的 usb_device_uvc device 输出），本项目用 MIPI-CSI 采集 + usb_device_uvc 输出，故不开（开了还会与 usb_device_uvc 争同一 USB-OTG）。
+# 注：CSI PHY 2.5V 由 example_video_common 默认初始化 LDO 提供，无需额外配置。
+# 注：CSI 驱动 backup buffer 上游 default y = 默认禁用（同板例程 video_lcd_display 亦如此）；本例程跟随默认（省内存）。若实测丢帧需后备缓冲，显式 CONFIG_ESP_VIDEO_DISABLE_MIPI_CSI_DRIVER_BACKUP_BUFFER=n。
+# 注：example_video_common 的 EXAMPLE_ENABLE_MIPI_CSI_CAM_MOTOR 虽 default y，但其依赖链仅被 esp_cam_sensor/motors/dw9714 select、OV5647 不触发（恒 n），无需配置。
+# 注：flash size（16MB）、SPIRAM（模组 PSRAM，含 SPIRAM_MODE / 200M-EXPERIMENTAL 相关说明）等 P4 模组/target 硬件属性见 sdkconfig.defaults.esp32p4（P4 构建时叠加）。

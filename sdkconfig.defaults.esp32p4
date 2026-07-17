@@ -3,3 +3,12 @@
 # 适配 ESP32-P4 修订版本 <3.0（实测板卡为 revision v1.3）。ESP-IDF 默认按量产 v3.x 构建，若不声明本项，esptool 会以 "requires chip revision in range [v3.0 - v3.99] (this chip is revision v1.3)" 拒绝烧录。该选项在 ESP-IDF v5.5.4 与 latest 均存在；对 Cloud 内的纯构建无副作用，仅影响真实烧录时的芯片修订校验。CONFIG_ESP32P4_REV_MIN_0 对应 menuconfig 中 "Minimum Supported ESP32-P4 Revision = Rev v0.0"，为最低支持修订，向下兼容 0.x/1.x（含 v1.3）。
 CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_0=y
+
+# 板级硬件属性：本板模组 N16R32 = 16MB flash（与 revision 并列；官方 uvc 例程无此项亦可构建，本板显式设更稳）
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# 大内存：帧缓冲需 PSRAM（N16R32 模组自带 32MB PSRAM；P4 默认 SPIRAM=n，必须显式开）；200M 为 v5.5.4 默认速度
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+# 注：P4 的 SPIRAM_MODE 唯一且默认 HEX（16-line），无需显式配置。
+# 注：IDF_EXPERIMENTAL_FEATURES 在 v5.5.4 下 200M PSRAM 已不需要（官方 uvc 例程带此项属其 5.4.x 版本耦合），故本例程不加；若 menuconfig/构建异常再补。
