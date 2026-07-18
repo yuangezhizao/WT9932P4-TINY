@@ -16,6 +16,9 @@
 #include "usb_device_uvc.h"
 #include "uvc_frame_config.h"
 #include "example_video_common.h"
+#include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #if CONFIG_FORMAT_MJPEG_CAM1
 #define ENCODE_DEV_PATH     ESP_VIDEO_JPEG_DEVICE_NAME
@@ -41,6 +44,9 @@ typedef struct uvc {
 
     uvc_fb_t fb;
 } uvc_t;
+
+// 摄像头电源使能脚：本板 J2 Pin5=IO0(GPIO0)=CAM_IO0(Power-Enable, active-high)
+#define CAM_PWR_EN_GPIO 0
 
 static const char *TAG = "example";
 
@@ -408,6 +414,19 @@ void app_main(void)
 {
     uvc_t *uvc = calloc(1, sizeof(uvc_t));
     assert(uvc);
+
+    // 摄像头电源使能：本板 J2 为倒序树莓派线序，J2 Pin5=IO0(GPIO0)=CAM_IO0(Power-Enable, active-high)。
+    // 拉高以给 OV5647 模块板载稳压器 + 25MHz 晶振上电；否则 sensor 无供电/无 XCLK，SCCB 恒 NACK、detect 失败。
+    gpio_config_t cam_pwr_en = {
+        .pin_bit_mask = 1ULL << CAM_PWR_EN_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cam_pwr_en));
+    ESP_ERROR_CHECK(gpio_set_level(CAM_PWR_EN_GPIO, 1));
+    vTaskDelay(pdMS_TO_TICKS(50));  // 等供电稳定 + 晶振起振（datasheet 要求 XCLK≥1ms、AVDD→PWDN>5ms，取 50ms 富余）
 
     ESP_ERROR_CHECK(example_video_init());
     ESP_ERROR_CHECK(init_capture_video(uvc));
