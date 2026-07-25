@@ -107,6 +107,10 @@ CONFIG_EXAMPLE_DISABLE_USB_MSC_STORAGE=y
 CONFIG_UVC_MODE_BULK_CAM1=y
 # JPEG 压缩质量：显式声明为默认 80（范围 1-100；仅影响清晰度、不影响偏黄）；如需提帧率可降到 60 等
 CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY=80
+# 停流功耗看门狗：本项目默认开启（实测 host 停流后空闲电流回落 ~60mA）。
+# 选项本身在 main/Kconfig.projbuild 为 default n（对齐官方蓝本、复用中性），此处按本项目实测覆盖为 y；阈值 1000ms（与 Kconfig 默认一致）。
+CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF=y
+CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF_MS=1000
 
 # 系统/RTOS：对齐同板例程，tick 100Hz→1000Hz，流水线任务调度/超时粒度 10ms→1ms
 CONFIG_FREERTOS_HZ=1000

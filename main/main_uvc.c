@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_heap_caps.h"
 
 #if CONFIG_FORMAT_MJPEG_CAM1
@@ -55,6 +56,18 @@ static const char *TAG = "example";
 // CPU 占比算法参考 ESP-IDF 官方示例 system/freertos/real_time_stats（两次采样差分、分母除以核数）
 #define MONITOR_PERIOD_MS   5000
 static volatile uint32_t s_uvc_frame_count;
+
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+// 停流看门狗状态（跨任务，volatile 保证可见性）：
+//   s_fb_seq        —— 每成功取一帧 +1（单写者 fb_get、多读者看门狗）
+//   s_stream_paused —— 初值 true=开机未在流；仅在 s_stream_lock 临界区内改
+//   s_stream_gen    —— 每次成功 STREAMON +1；看门狗据此识别「流已被 commit 重启」（防交错误停）
+//   s_stream_lock   —— 互斥锁，串行化 start/stop，防看门狗与 TinyUSB 的 commit_cb/suspend_cb 并发交错
+static volatile bool s_stream_paused = true;
+static volatile uint32_t s_fb_seq;
+static volatile uint32_t s_stream_gen;
+static SemaphoreHandle_t s_stream_lock;
+#endif
 
 static void monitor_task(void *arg)
 {
@@ -290,6 +303,10 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
 
     ESP_LOGD(TAG, "UVC start");
 
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    xSemaphoreTake(s_stream_lock, portMAX_DELAY);   // 与 stop/看门狗串行；覆盖整个流配置+STREAMON
+#endif
+
     if (uvc->format == V4L2_PIX_FMT_JPEG) {
         int fmt_index = 0;
         const uint32_t jpeg_input_formats[] = {
@@ -320,6 +337,9 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
 
         if (!capture_fmt) {
             ESP_LOGI(TAG, "The camera sensor output pixel format is not supported by JPEG");
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+            xSemaphoreGive(s_stream_lock);
+#endif
             return ESP_ERR_NOT_SUPPORTED;
         }
     } else {
@@ -405,23 +425,81 @@ static esp_err_t video_start_cb(uvc_format_t uvc_format, int width, int height, 
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ESP_ERROR_CHECK(ioctl(uvc->cap_fd, VIDIOC_STREAMON, &type));
 
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    if (s_stream_paused) {
+        ESP_LOGI(TAG, "UVC stream resumed (STREAMON)");  // 恢复翻转日志（仅真翻转时）
+    }
+    s_stream_gen++;           // 标记「流已（重）启动」，供看门狗 double-check 识别、避免误停刚恢复的流
+    s_stream_paused = false;  // 仅此一处清 paused
+    xSemaphoreGive(s_stream_lock);
+#endif
+
     return ESP_OK;
 }
 
-static void video_stop_cb(void *cb_ctx)
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+// 【调用者须已持 s_stream_lock】置 paused + STREAMOFF 采集/编码流水线；看门狗与 video_stop_cb 共用唯一出口
+static void stream_off_locked(uvc_t *uvc)
 {
     int type;
-    uvc_t *uvc = (uvc_t *)cb_ctx;
-
-    ESP_LOGD(TAG, "UVC stop");
-
+    if (!s_stream_paused) {
+        ESP_LOGI(TAG, "UVC stream paused (STREAMOFF)");  // 仅真翻转打一条（看门狗/commit/suspend 共用、压噪）
+    }
+    s_stream_paused = true;
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(uvc->cap_fd, VIDIOC_STREAMOFF, &type);
-
     type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
     ioctl(uvc->m2m_fd, VIDIOC_STREAMOFF, &type);
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(uvc->m2m_fd, VIDIOC_STREAMOFF, &type);
+}
+
+// 电平式循环：暂停期保鲜基线 / 帧推进或流(重)启刷新停滞时钟 / 停滞超阈值 → 锁内 generation double-check 后 STREAMOFF
+static void stream_watchdog_task(void *arg)
+{
+    uvc_t *uvc = (uvc_t *)arg;
+    uint32_t last_seq = 0, last_gen = 0;
+    TickType_t last_tick = xTaskGetTickCount();
+    const TickType_t timeout = pdMS_TO_TICKS(CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF_MS);
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        TickType_t now = xTaskGetTickCount();
+        if (s_stream_paused) {                          // 暂停期持续保鲜、停滞时钟归零
+            last_seq = s_fb_seq; last_gen = s_stream_gen; last_tick = now;
+        } else if (s_fb_seq != last_seq || s_stream_gen != last_gen) {  // 帧推进 或 流(重)启(gen 变) → 刷新停滞时钟+基线
+            last_seq = s_fb_seq; last_gen = s_stream_gen; last_tick = now;  // gen 分支保证 STREAMON 后即使零帧也重置计时，否则 last_gen 永久落后、double-check 恒跳过、看门狗永不停流（Major）
+        } else if ((now - last_tick) >= timeout) {      // 停滞超阈值 → 锁内二次确认后 STREAMOFF
+            xSemaphoreTake(s_stream_lock, portMAX_DELAY);
+            // double-check：未暂停 + 仍停滞 + 流未被 commit 重启（gen 未变）才停，避免与 start_cb 交错误停刚恢复的流
+            if (!s_stream_paused && s_fb_seq == last_seq && s_stream_gen == last_gen) {
+                stream_off_locked(uvc);
+            }
+            xSemaphoreGive(s_stream_lock);
+            last_tick = now;                            // fire 后刷新基线（防同 200ms 窗口内重复触发，Major#1）
+        }
+    }
+}
+#endif
+
+static void video_stop_cb(void *cb_ctx)
+{
+    uvc_t *uvc = (uvc_t *)cb_ctx;
+
+    ESP_LOGD(TAG, "UVC stop");
+
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    xSemaphoreTake(s_stream_lock, portMAX_DELAY);
+    stream_off_locked(uvc);   // 置 paused + 3 路 STREAMOFF（与看门狗共用唯一出口、锁内串行）
+    xSemaphoreGive(s_stream_lock);
+#else
+    int type;
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    ioctl(uvc->cap_fd, VIDIOC_STREAMOFF, &type);
+    type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
+    ioctl(uvc->m2m_fd, VIDIOC_STREAMOFF, &type);
+    type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    ioctl(uvc->m2m_fd, VIDIOC_STREAMOFF, &type);
+#endif
 }
 
 static uvc_fb_t *video_fb_get_cb(void *cb_ctx)
@@ -434,6 +512,13 @@ static uvc_fb_t *video_fb_get_cb(void *cb_ctx)
     struct v4l2_buffer m2m_cap_buf;
 
     ESP_LOGD(TAG, "UVC get");
+
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    if (s_stream_paused) {
+        vTaskDelay(pdMS_TO_TICKS(1000));  // 暂停期不 DQBUF（防 STREAMOFF 后 ESP_ERROR_CHECK panic）+ 降噪
+        return NULL;
+    }
+#endif
 
     memset(&cap_buf, 0, sizeof(cap_buf));
     cap_buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -471,6 +556,9 @@ static uvc_fb_t *video_fb_get_cb(void *cb_ctx)
     uvc->fb.timestamp.tv_usec = us % 1000000UL;
 
     s_uvc_frame_count++;
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    s_fb_seq++;
+#endif
     return &uvc->fb;
 }
 
@@ -534,9 +622,20 @@ void app_main(void)
     ESP_ERROR_CHECK(example_video_init());
     ESP_ERROR_CHECK(init_capture_video(uvc));
     ESP_ERROR_CHECK(init_codec_video(uvc));
+
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    s_stream_lock = xSemaphoreCreateMutex();
+    assert(s_stream_lock);  // 须早于 uvc_device_init 启动的 TinyUSB/UVC 回调任务，防回调撞 NULL 锁
+#endif
+
     ESP_ERROR_CHECK(init_uvc(uvc));
 
     // 性能监视任务：每 5s 打印 fps / CPU / 内存（CPU 需 sdkconfig runtime stats）
     BaseType_t mon_ok = xTaskCreate(monitor_task, "monitor", 4096, NULL, 1, NULL);
     assert(mon_ok == pdPASS);
+
+#if CONFIG_EXAMPLE_UVC_IDLE_STREAMOFF
+    BaseType_t wd_ok = xTaskCreate(stream_watchdog_task, "uvc_wd", 4096, uvc, 1, NULL);
+    assert(wd_ok == pdPASS);  // 建失败即 abort，不静默禁用特性
+#endif
 }
