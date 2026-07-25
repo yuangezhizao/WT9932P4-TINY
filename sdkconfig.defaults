@@ -110,6 +110,11 @@ CONFIG_EXAMPLE_JPEG_COMPRESSION_QUALITY=80
 
 # 系统/RTOS：对齐同板例程，tick 100Hz→1000Hz，流水线任务调度/超时粒度 10ms→1ms
 CONFIG_FREERTOS_HZ=1000
+# 运行时统计（供 main_uvc 的 monitor task 用 uxTaskGetSystemState 打印 CPU 使用率 + 逐任务明细）
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# 让 TaskStatus_t 带 xCoreID，逐任务明细可显示任务所在核
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 
 # 分区表：摄像头固件较大，用内置 large 分区（factory ~1.5MB）；构建后 idf.py size 若超再改 CUSTOM
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

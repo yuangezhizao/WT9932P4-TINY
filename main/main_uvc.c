@@ -19,6 +19,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 
 #if CONFIG_FORMAT_MJPEG_CAM1
 #define ENCODE_DEV_PATH     ESP_VIDEO_JPEG_DEVICE_NAME
@@ -49,6 +50,107 @@ typedef struct uvc {
 #define CAM_PWR_EN_GPIO 0
 
 static const char *TAG = "example";
+
+// 性能监视：UVC 每提供一帧 s_uvc_frame_count++，monitor_task 每隔 MONITOR_PERIOD_MS 汇总 fps + CPU + 内存 + 逐任务明细
+// CPU 占比算法参考 ESP-IDF 官方示例 system/freertos/real_time_stats（两次采样差分、分母除以核数）
+#define MONITOR_PERIOD_MS   5000
+static volatile uint32_t s_uvc_frame_count;
+
+static void monitor_task(void *arg)
+{
+    // 任务快照缓冲上限 24：任务数超此则 uxTaskGetSystemState 返回 0、该周期逐任务 CPU 明细降级为不显示（本例任务数远小于 24）
+    static TaskStatus_t prev[24];
+    UBaseType_t prev_num = 0;
+    uint32_t prev_total = 0;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(MONITOR_PERIOD_MS));
+
+        // fps 换算为每秒帧率（采样周期内累计帧数 ÷ 周期秒数）
+        uint32_t fps = s_uvc_frame_count * 1000 / MONITOR_PERIOD_MS;
+        s_uvc_frame_count = 0;
+
+        size_t int_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        size_t int_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+        size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+
+        // 两次采样各任务累计运行时间，算过去 5 秒的 runtime 增量（按 handle 匹配上次采样）
+        TaskStatus_t cur[24];
+        uint32_t cur_total = 0;
+        UBaseType_t cur_num = uxTaskGetSystemState(cur, 24, &cur_total);
+        // 分母 = 单核 runtime 增量 × 核数（对齐官方 real_time_stats；双核下各任务占比合计约 100%）
+        uint32_t denom = (prev_num && cur_num && cur_total > prev_total)
+                             ? ((cur_total - prev_total) * CONFIG_FREERTOS_NUMBER_OF_CORES) : 0;
+
+        uint32_t rt_delta[24] = {0};
+        uint32_t idle_delta = 0;
+        for (UBaseType_t i = 0; i < cur_num; i++) {
+            for (UBaseType_t j = 0; j < prev_num; j++) {
+                if (cur[i].xHandle == prev[j].xHandle) {
+                    rt_delta[i] = cur[i].ulRunTimeCounter - prev[j].ulRunTimeCounter;
+                    break;
+                }
+            }
+            if (strncmp(cur[i].pcTaskName, "IDLE", 4) == 0) {
+                idle_delta += rt_delta[i];
+            }
+        }
+        int cpu = denom ? (100 - (int)((idle_delta * 100) / denom)) : -1;
+
+        // 空行分隔每次采样输出，避免多组连在一起
+        ESP_LOGI(TAG, " ");
+
+        // 总览行
+        if (cpu >= 0) {
+            ESP_LOGI(TAG, "perf | fps=%u | CPU=%d%% | INT free=%uKB(min %uKB) | PSRAM free=%uKB",
+                     (unsigned)fps, cpu, (unsigned)(int_free / 1024), (unsigned)(int_min / 1024), (unsigned)(psram_free / 1024));
+        } else {
+            ESP_LOGI(TAG, "perf | fps=%u | INT free=%uKB(min %uKB) | PSRAM free=%uKB",
+                     (unsigned)fps, (unsigned)(int_free / 1024), (unsigned)(int_min / 1024), (unsigned)(psram_free / 1024));
+        }
+
+        // 逐任务明细（TaskStatus_t 全部字段；列参考 ESP-IDF vTaskList：名/状态/优先级/HWM/编号/核，另加 CPU%/句柄/栈基址）
+        // St：Run/Rdy/Blk/Sus/Del；Pri(c/b)=当前/基础优先级；CPU%=过去 5 秒占比；StkMin=栈剩余最低水位(字节,越小越危险)
+        if (denom) {
+            ESP_LOGI(TAG, "  ===========================================================================");
+            ESP_LOGI(TAG, "  %-15s %-4s %-4s %-3s %-8s %-4s %-9s %-10s %-10s",
+                     "TaskName", "Num", "Core", "St", "Pri(c/b)", "CPU%", "StkMin(B)", "Handle", "StackBase");
+            for (UBaseType_t i = 0; i < cur_num; i++) {
+                const char *st;
+                switch (cur[i].eCurrentState) {
+                    case eRunning:   st = "Run"; break;
+                    case eReady:     st = "Rdy"; break;
+                    case eBlocked:   st = "Blk"; break;
+                    case eSuspended: st = "Sus"; break;
+                    case eDeleted:   st = "Del"; break;
+                    default:         st = "Inv"; break;
+                }
+                char core[3];
+#if configTASKLIST_INCLUDE_COREID
+                core[0] = (cur[i].xCoreID == tskNO_AFFINITY) ? '*' : (char)('0' + cur[i].xCoreID);
+#else
+                core[0] = '?';
+#endif
+                core[1] = '\0';
+                ESP_LOGI(TAG, "  %-15s %-4u %-4s %-3s %2u/%-5u %3d%% %-9u %-10p %p",
+                         cur[i].pcTaskName,
+                         (unsigned)cur[i].xTaskNumber,
+                         core, st,
+                         (unsigned)cur[i].uxCurrentPriority, (unsigned)cur[i].uxBasePriority,
+                         (int)((rt_delta[i] * 100) / denom),
+                         (unsigned)cur[i].usStackHighWaterMark,
+                         (void *)cur[i].xHandle,
+                         (void *)cur[i].pxStackBase);
+            }
+        }
+
+        if (cur_num) {
+            memcpy(prev, cur, sizeof(TaskStatus_t) * cur_num);
+            prev_num = cur_num;
+            prev_total = cur_total;
+        }
+    }
+}
 
 static void print_video_device_info(const struct v4l2_capability *capability)
 {
@@ -368,6 +470,7 @@ static uvc_fb_t *video_fb_get_cb(void *cb_ctx)
     uvc->fb.timestamp.tv_sec = us / 1000000UL;
     uvc->fb.timestamp.tv_usec = us % 1000000UL;
 
+    s_uvc_frame_count++;
     return &uvc->fb;
 }
 
@@ -432,4 +535,8 @@ void app_main(void)
     ESP_ERROR_CHECK(init_capture_video(uvc));
     ESP_ERROR_CHECK(init_codec_video(uvc));
     ESP_ERROR_CHECK(init_uvc(uvc));
+
+    // 性能监视任务：每 5s 打印 fps / CPU / 内存（CPU 需 sdkconfig runtime stats）
+    BaseType_t mon_ok = xTaskCreate(monitor_task, "monitor", 4096, NULL, 1, NULL);
+    assert(mon_ok == pdPASS);
 }
